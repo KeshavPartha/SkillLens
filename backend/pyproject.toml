@@ -1,0 +1,43 @@
+[project]
+name = "skilllens-backend"
+version = "0.1.0"
+description = "Backend for SkillLens — AI-powered career gap analysis and planning agent."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic",
+    "pydantic-settings",
+    "anthropic",
+    "langchain",
+    "langchain-anthropic",
+    "langgraph",
+    "langchain-community",
+    "qdrant-client",
+    "sentence-transformers",
+    "supabase",
+    "sqlalchemy",
+    "alembic",
+    "pypdf",
+    "python-multipart",
+    "redis",
+    "httpx",
+    "tavily-python",
+    "langsmith",
+    "python-dotenv",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+    "httpx",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]

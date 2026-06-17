@@ -216,3 +216,17 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- SkillLens project (added during scaffold) ---
+.env
+.env.local
+__pycache__/
+.venv/
+node_modules/
+.next/
+*.pyc
+.DS_Store
+*.egg-info/
+dist/
+.pytest_cache/
+.ruff_cache/
