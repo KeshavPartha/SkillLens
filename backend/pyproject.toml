@@ -25,6 +25,8 @@ dependencies = [
     "tavily-python",
     "langsmith",
     "python-dotenv",
+    "asyncpg>=0.31.0",
+    "greenlet>=3.5.2",
 ]
 
 [dependency-groups]
