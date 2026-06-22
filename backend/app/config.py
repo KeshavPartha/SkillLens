@@ -28,15 +28,18 @@ class DatabaseSettings(BaseSettings):
         default="postgresql://postgres:postgres@localhost:5432/skilllens",
         validation_alias="SUPABASE_DB_URL",
     )
+    # Optional direct/session-mode DSN for migrations. Supabase's transaction
+    # pooler (port 6543) can't run alembic/ORM prepared statements, so migrations
+    # use this instead. Defaults to deriving the session pooler from ``url``.
+    migration_url: str | None = Field(
+        default=None, validation_alias="SUPABASE_DB_DIRECT_URL"
+    )
     pool_size: int = 10
     max_overflow: int = 5
     echo: bool = False
 
-    @property
-    def async_url(self) -> str:
-        """DSN with the asyncpg driver, for the async SQLAlchemy engine."""
-
-        url = self.url
+    @staticmethod
+    def _to_asyncpg(url: str) -> str:
         if url.startswith("postgresql+asyncpg://"):
             return url
         if url.startswith("postgresql://"):
@@ -44,6 +47,36 @@ class DatabaseSettings(BaseSettings):
         if url.startswith("postgres://"):
             return url.replace("postgres://", "postgresql+asyncpg://", 1)
         return url
+
+    @staticmethod
+    def _prefer_session_pooler(url: str) -> str:
+        """Route Supabase's transaction pooler (6543) to its session pooler (5432).
+
+        The transaction pooler can't serve this ORM/migration workload (no cached
+        prepared statements, inconsistent read-after-write); the session pooler can.
+        """
+
+        if "pooler.supabase.com" in url and ":6543/" in url:
+            return url.replace(":6543/", ":5432/")
+        return url
+
+    @property
+    def async_url(self) -> str:
+        """Runtime DSN with the asyncpg driver (session pooler for Supabase)."""
+
+        return self._prefer_session_pooler(self._to_asyncpg(self.url))
+
+    @property
+    def async_migration_url(self) -> str:
+        """DSN used for alembic migrations.
+
+        Uses ``SUPABASE_DB_DIRECT_URL`` when set; otherwise the same session-pooler
+        DSN as the runtime connection.
+        """
+
+        if self.migration_url:
+            return self._prefer_session_pooler(self._to_asyncpg(self.migration_url))
+        return self.async_url
 
 
 class QdrantSettings(BaseSettings):

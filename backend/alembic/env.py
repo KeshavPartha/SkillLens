@@ -1,9 +1,7 @@
 import asyncio
 from logging.config import fileConfig
 
-from sqlalchemy import pool
 from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
 
@@ -15,7 +13,7 @@ from app.db.models import Base
 config = context.config
 
 # Connection URL comes from application settings (asyncpg DSN), not alembic.ini.
-config.set_main_option("sqlalchemy.url", get_settings().database.async_url)
+config.set_main_option("sqlalchemy.url", get_settings().database.async_migration_url)
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
@@ -63,16 +61,15 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_async_migrations() -> None:
-    """In this scenario we need to create an Engine
-    and associate a connection with the context.
+    """Create an Engine and associate a connection with the context.
 
+    Reuse the application engine so pgbouncer/pooler-safe connect args (disabled
+    statement cache, unique prepared-statement names) apply to migrations too.
     """
 
-    connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
+    from app.db.engine import create_migration_engine
+
+    connectable = create_migration_engine()
 
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)
