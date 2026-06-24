@@ -82,10 +82,11 @@ async def upsert_posting(session: AsyncSession, posting: JobPosting) -> None:
 
 async def mark_inactive(
     session: AsyncSession, company_id: str, seen_ids: set[str]
-) -> int:
+) -> list[str]:
     """Soft-delete postings for a company that were not seen in the latest fetch.
 
-    Returns the number of rows marked inactive.
+    Returns the ids of the postings marked inactive, so callers can propagate the
+    same soft-delete to other stores (e.g. Qdrant) keyed off those ids.
     """
 
     stmt = (
@@ -94,6 +95,7 @@ async def mark_inactive(
         .where(JobPostingRow.is_active.is_(True))
         .where(JobPostingRow.id.notin_(seen_ids) if seen_ids else True)
         .values(is_active=False)
+        .returning(JobPostingRow.id)
     )
     result = await session.execute(stmt)
-    return result.rowcount or 0
+    return list(result.scalars().all())

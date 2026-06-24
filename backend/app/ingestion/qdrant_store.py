@@ -94,6 +94,25 @@ async def upsert_postings(
     return len(points)
 
 
+async def mark_inactive(job_ids: list[str], client: AsyncQdrantClient | None = None) -> None:
+    """Flip ``is_active`` to ``False`` on existing points for the given job ids.
+
+    Keeps Qdrant's payload in sync with a Postgres soft-delete (``app.db.mark_inactive``)
+    without re-sending vectors, so a stale "active" posting can't surface in search after
+    it has vanished from its source board.
+    """
+
+    if not job_ids:
+        return
+    settings = get_settings().qdrant
+    client = client or get_qdrant_client()
+    await client.set_payload(
+        collection_name=settings.collection_name,
+        payload={"is_active": False},
+        points=[point_id(job_id) for job_id in job_ids],
+    )
+
+
 async def count_points(client: AsyncQdrantClient | None = None) -> int:
     """Return the number of points in the postings collection."""
 

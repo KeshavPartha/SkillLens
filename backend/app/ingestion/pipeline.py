@@ -26,6 +26,7 @@ from app.ingestion.qdrant_store import (
     point_id,
     upsert_postings,
 )
+from app.ingestion.qdrant_store import mark_inactive as mark_inactive_in_qdrant
 from app.ingestion.registry import BoardConfig, get_registry
 from app.llm import get_router
 from app.models import JobPosting, JobSource
@@ -59,11 +60,14 @@ async def ingest_board(
         await upsert_company(session, company_from_board(board))
         for e in enriched:
             await upsert_posting(session, e)
-        await mark_inactive(session, board.company_id, {e.id for e in enriched})
+        vanished_ids = await mark_inactive(session, board.company_id, {e.id for e in enriched})
 
     # Embed and store vectors.
     vectors = await embed_postings(enriched)
     await upsert_postings(enriched, vectors)
+
+    # Keep Qdrant's payload in sync with the Postgres soft-delete above.
+    await mark_inactive_in_qdrant(vanished_ids)
 
     logger.info(
         "ingested %s: %d fetched, %d SWE stored", board.name, len(postings), len(enriched)
