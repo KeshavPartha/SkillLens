@@ -87,6 +87,41 @@ This maps to the data models, each owned by a stage:
 - **`plan.py` — `CareerPlan`**: the deliverable. Wraps the gaps plus 1–12 `WeeklyMilestone`s;
   gap counts and milestone sequencing are validated/computed by the model.
 
+### Agents
+
+Agents live in `app/agents/`, one module per pipeline stage. Each takes a live `AgentTrace`,
+appends `TraceStep`s as it works (the terminal step of any LLM-backed stage carries
+`cost_usd` / `input_tokens` / `output_tokens` / `model_used`), and returns a validated Pydantic
+model — never a raw dict.
+
+- **`profile_agent.py` — `extract_profile(pdf_bytes, *, target_role, run_id, trace, router)`**:
+  PDF → `CandidateProfile`. Extracts text with `pypdf` inside `asyncio.to_thread`, then calls Claude
+  Haiku (`ModelTask.EXTRACTION`) with a **forced tool call** (the `extract_profile` tool +
+  `tool_choice` pinned to it) for reliable structured output.
+  - `_AGENT_SET_FIELDS` (`target_role`, `raw_resume_text`, `total_years_experience`) are injected by
+    the agent, **not** the LLM — they're deliberately omitted from the tool schema. Keep new
+    server-owned fields out of the tool schema and set them in `_build_profile`.
+  - Self-correction: on a Pydantic `ValidationError`, the validation error is fed back to the model
+    and extraction is retried **once**; a second failure raises `ProfileExtractionError` and records
+    an `AGENT_ERROR` step. Don't widen this beyond one retry without a reason (cost ceiling).
+- **`market_agent.py` — `query_market(profile, *, top_k=20, run_id, trace)`**: hybrid RAG over
+  Qdrant → `MarketResult` (`app/models/market.py`). Embeds a query string locally
+  (`ingestion.embed.embed_texts`, **same MiniLM model/dim as ingestion**), runs a semantic search
+  plus a keyword (skill/title overlap) re-rank over the candidate pool, and fuses the two with
+  **Reciprocal Rank Fusion** (`reciprocal_rank_fusion`, k=60). Surviving ids are hydrated to full
+  `JobPosting`s from Postgres (`repository.get_postings_by_ids`, the inverse of `upsert_posting`)
+  and `relevance_score` is RRF normalized to 1.0 at the top. `aggregate_skill_demand` tallies
+  required-skill prevalence across the top-k. Makes **no LLM call**, so it adds no run cost.
+
+### API surface
+
+- `app/api/main.py` is the FastAPI app (`app.api.main:app`); routes live in `app/api/routes/`.
+- `POST /profile/parse` (multipart: `file` + `target_role`) **streams** the profile agent's trace
+  over SSE: one `data:` frame per step, then a terminal `event: profile` (or `event: error`) frame.
+  SSE framing helpers are in `app/api/sse.py`; step payloads must use `AgentTrace.to_sse_payload`.
+  `AgentTrace.listener` is the hook the route uses to push steps onto an `asyncio.Queue` as they're
+  appended (keep it sync and non-blocking).
+
 ### Tracing and streaming
 
 `AgentTrace` (in `trace.py`) is a live, mutating accumulator — a plain class, not a `BaseModel`.
@@ -120,10 +155,11 @@ Hard cost limit: raise an error if a single agent run exceeds $0.50.
 
 - Callers route by `ModelTask` (`EXTRACTION` / `ANALYSIS` / `CLASSIFICATION`), never by model name
   — `LLMRouter._routes` is the only place a `ModelTask` maps to a `(Provider, model)` pair.
-- Only `ModelTask.CLASSIFICATION` → Groq/Llama is wired today (`GroqProvider`); `EXTRACTION` /
-  `ANALYSIS` → Anthropic routes are declared in the table above but raise `NotImplementedError`
-  until an `AnthropicProvider` is added. Don't call `router.complete(task=ModelTask.EXTRACTION)`
-  yet.
+- All three routes are wired: `ModelTask.CLASSIFICATION` → Groq/Llama (`GroqProvider`), and
+  `EXTRACTION` → Haiku / `ANALYSIS` → Sonnet via `AnthropicProvider` (`app/llm/anthropic_provider.py`,
+  the only place the Anthropic SDK may be imported). `AnthropicProvider` returns a forced `tool_use`
+  block as JSON when one is present, falling back to text — callers that pass `tools` +
+  `tool_choice` get structured output back in `LLMResponse.content`.
 - Cost is metered from a hardcoded `PRICING` table in `app/llm/cost.py` (published list rates, not
   the vendor's actual bill — Groq's free tier still meters as if paid). Update `PRICING` whenever
   a model's list price changes or a new model/provider is added to the routing table.
@@ -154,6 +190,10 @@ orchestration.
 - Qdrant point IDs are deterministic (`uuid5` of the Postgres `JobPosting.id`) so re-running
   ingestion upserts the same point instead of duplicating — never use Qdrant's auto-generated IDs
   for postings.
+- `qdrant_store.ensure_collection` also creates payload indexes (`is_active`, `seniority`,
+  `role_cluster`) — Qdrant rejects a filtered search on an unindexed field. The market agent
+  filters on `is_active`, so any field you want to filter on at query time must be added to
+  `_PAYLOAD_INDEXES` and `ensure_collection` re-run (it's idempotent).
 - **Cross-store invariant**: whenever a posting is soft-deleted in Postgres
   (`app.db.mark_inactive`), the same ids must be soft-deleted in Qdrant
   (`app.ingestion.qdrant_store.mark_inactive`, which flips the `is_active` payload field via
@@ -228,3 +268,42 @@ routes or agent code:
 
 `docker-compose.yml` provides Postgres (5432), Qdrant (6333), and Redis (6379). External services
 configured via `.env`: Anthropic, Groq, Tavily (search), Supabase, LangSmith (tracing).
+
+<!-- code-review-graph MCP tools -->
+## MCP Tools: code-review-graph
+
+**IMPORTANT: This project has a knowledge graph. ALWAYS use the
+code-review-graph MCP tools BEFORE using Grep/Glob/Read to explore
+the codebase.** The graph is faster, cheaper (fewer tokens), and gives
+you structural context (callers, dependents, test coverage) that file
+scanning cannot.
+
+### When to use graph tools FIRST
+
+- **Exploring code**: `semantic_search_nodes` or `query_graph` instead of Grep
+- **Understanding impact**: `get_impact_radius` instead of manually tracing imports
+- **Code review**: `detect_changes` + `get_review_context` instead of reading entire files
+- **Finding relationships**: `query_graph` with callers_of/callees_of/imports_of/tests_for
+- **Architecture questions**: `get_architecture_overview` + `list_communities`
+
+Fall back to Grep/Glob/Read **only** when the graph doesn't cover what you need.
+
+### Key Tools
+
+| Tool | Use when |
+| ------ | ---------- |
+| `detect_changes` | Reviewing code changes — gives risk-scored analysis |
+| `get_review_context` | Need source snippets for review — token-efficient |
+| `get_impact_radius` | Understanding blast radius of a change |
+| `get_affected_flows` | Finding which execution paths are impacted |
+| `query_graph` | Tracing callers, callees, imports, tests, dependencies |
+| `semantic_search_nodes` | Finding functions/classes by name or keyword |
+| `get_architecture_overview` | Understanding high-level codebase structure |
+| `refactor_tool` | Planning renames, finding dead code |
+
+### Workflow
+
+1. The graph auto-updates on file changes (via hooks).
+2. Use `detect_changes` for code review.
+3. Use `get_affected_flows` to understand impact.
+4. Use `query_graph` pattern="tests_for" to check coverage.
