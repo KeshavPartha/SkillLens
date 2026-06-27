@@ -130,6 +130,19 @@ class IngestionSettings(BaseSettings):
     classify_low_confidence_with_llm: bool = True
 
 
+class APISettings(BaseSettings):
+    """FastAPI app settings."""
+
+    model_config = SettingsConfigDict(env_file=_ENV_FILE, extra="ignore")
+
+    # Browser origins allowed to call the API (the Next.js dev server by default).
+    cors_origins: list[str] = Field(
+        default=["http://localhost:3000"], validation_alias="API_CORS_ORIGINS"
+    )
+    # Reject resume uploads larger than this (bytes). Default 10 MB.
+    max_upload_bytes: int = 10 * 1024 * 1024
+
+
 class Settings(BaseSettings):
     """Root settings aggregating every sub-config."""
 
@@ -140,6 +153,7 @@ class Settings(BaseSettings):
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     ingestion: IngestionSettings = Field(default_factory=IngestionSettings)
+    api: APISettings = Field(default_factory=APISettings)
 
 
 @lru_cache

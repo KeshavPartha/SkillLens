@@ -230,3 +230,9 @@ node_modules/
 dist/
 .pytest_cache/
 .ruff_cache/
+# Added by code-review-graph
+.code-review-graph/
+
+# Frontend source lib (the Python `lib/` rule above otherwise ignores it)
+!frontend/src/lib/
+!frontend/src/lib/**

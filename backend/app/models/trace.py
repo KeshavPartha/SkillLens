@@ -7,6 +7,7 @@ Events so the frontend can render a live activity feed.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
@@ -85,6 +86,10 @@ class AgentTrace:
         self.total_cost_usd: float = 0.0
         self.total_input_tokens: int = 0
         self.total_output_tokens: int = 0
+        # Optional sync listener notified after each step is appended (e.g. the
+        # SSE endpoint pushes the step onto an asyncio.Queue). Kept sync so
+        # append_step stays sync; the listener must not block.
+        self.listener: Callable[[TraceStep], None] | None = None
 
     def append_step(self, step: TraceStep) -> TraceStep:
         """Append a step and roll its cost/token figures into the totals."""
@@ -98,6 +103,8 @@ class AgentTrace:
             self.total_output_tokens += step.output_tokens
         if step.is_error:
             self.had_error = True
+        if self.listener is not None:
+            self.listener(step)
         return step
 
     def to_sse_payload(self, step: TraceStep) -> dict[str, Any]:
