@@ -4,8 +4,8 @@ All LLM calls go through :meth:`LLMRouter.complete`, which maps a :class:`ModelT
 provider + model, dispatches to the right provider, and meters cost against the per-run
 ceiling. Callers never pass model names or touch a vendor SDK.
 
-For the ingestion pipeline only ``CLASSIFICATION`` (Groq/Llama) is needed; the Anthropic
-``EXTRACTION`` / ``ANALYSIS`` tasks are intentionally left as a clear extension point.
+The ingestion pipeline uses ``CLASSIFICATION`` (Groq/Llama); agents use ``EXTRACTION`` /
+``ANALYSIS`` (Anthropic Haiku / Sonnet).
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from __future__ import annotations
 from functools import lru_cache
 
 from app.config import Settings, get_settings
+from app.llm.anthropic_provider import AnthropicProvider
 from app.llm.base import (
     BaseLLMProvider,
     LLMMessage,
@@ -50,10 +51,16 @@ class LLMRouter:
                     api_key=llm.groq_api_key,
                     timeout=llm.request_timeout_seconds,
                 )
+            elif provider is Provider.ANTHROPIC:
+                if not llm.anthropic_api_key:
+                    raise RuntimeError("ANTHROPIC_API_KEY is not configured")
+                self._providers[provider] = AnthropicProvider(
+                    api_key=llm.anthropic_api_key,
+                    timeout=llm.request_timeout_seconds,
+                )
             else:
                 raise NotImplementedError(
-                    f"provider {provider.value!r} is not wired up yet "
-                    "(only Groq/CLASSIFICATION is implemented)"
+                    f"provider {provider.value!r} is not wired up yet"
                 )
         return self._providers[provider]
 
