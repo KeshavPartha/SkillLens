@@ -26,6 +26,11 @@ from app.models.gap import (
     PostingEvidence,
     SkillGap,
 )
+from app.models.market import (
+    MarketResult,
+    ScoredPosting,
+    SkillDemand,
+)
 from app.models.plan import (
     ResourceType,
     Resource,
@@ -58,6 +63,10 @@ __all__ = [
     "GapSeverity",
     "PostingEvidence",
     "SkillGap",
+    # market
+    "MarketResult",
+    "ScoredPosting",
+    "SkillDemand",
     # plan
     "ResourceType",
     "Resource",

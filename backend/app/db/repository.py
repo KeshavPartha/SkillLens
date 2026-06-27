@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import hashlib
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.db.models import CompanyRow, JobPostingRow
 from app.models import Company, JobPosting
@@ -78,6 +79,61 @@ async def upsert_posting(session: AsyncSession, posting: JobPosting) -> None:
         index_elements=[JobPostingRow.id], set_=update_cols
     )
     await session.execute(stmt)
+
+
+def _row_to_posting(row: JobPostingRow) -> JobPosting:
+    """Reconstruct the JobPosting Pydantic model from its persisted row.
+
+    The inverse of :func:`upsert_posting`. Enum/URL fields are stored as strings and
+    coerced back by Pydantic; ``required_skills`` is a JSONB list of dicts.
+    """
+
+    company = Company(
+        id=row.company.id,
+        name=row.company.name,
+        industry=row.company.industry,
+        size_range=row.company.size_range,
+        hq_location=row.company.hq_location,
+    )
+    return JobPosting(
+        id=row.id,
+        source=row.source,
+        external_id=row.external_id,
+        url=row.url,
+        title=row.title,
+        company=company,
+        location=row.location,
+        is_remote=row.is_remote,
+        employment_type=row.employment_type,
+        seniority=row.seniority,
+        description_raw=row.description_raw,
+        description_cleaned=row.description_cleaned,
+        required_skills=row.required_skills,
+        role_cluster=row.role_cluster,
+        salary_min=row.salary_min,
+        salary_max=row.salary_max,
+        salary_currency=row.salary_currency,
+        posted_at=row.posted_at,
+        fetched_at=row.fetched_at,
+        is_active=row.is_active,
+        embedding_id=row.embedding_id,
+    )
+
+
+async def get_postings_by_ids(
+    session: AsyncSession, ids: list[str]
+) -> dict[str, JobPosting]:
+    """Fetch postings by id, returning a ``{id: JobPosting}`` map (missing ids omitted)."""
+
+    if not ids:
+        return {}
+    stmt = (
+        select(JobPostingRow)
+        .where(JobPostingRow.id.in_(ids))
+        .options(selectinload(JobPostingRow.company))
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    return {row.id: _row_to_posting(row) for row in rows}
 
 
 async def mark_inactive(

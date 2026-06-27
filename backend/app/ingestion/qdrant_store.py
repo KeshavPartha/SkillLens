@@ -11,13 +11,29 @@ import uuid
 from functools import lru_cache
 
 from qdrant_client import AsyncQdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    MatchValue,
+    PayloadSchemaType,
+    PointStruct,
+    ScoredPoint,
+    VectorParams,
+)
 
 from app.config import get_settings
 from app.models import JobPosting
 
 # Fixed namespace so point ids are stable across runs/processes.
 _NAMESPACE = uuid.UUID("6f9619ff-8b86-d011-b42d-00c04fc964ff")
+
+# Payload fields the market agent filters on; Qdrant requires an index per field.
+_PAYLOAD_INDEXES: dict[str, PayloadSchemaType] = {
+    "is_active": PayloadSchemaType.BOOL,
+    "seniority": PayloadSchemaType.KEYWORD,
+    "role_cluster": PayloadSchemaType.KEYWORD,
+}
 
 
 def point_id(job_id: str) -> str:
@@ -35,19 +51,29 @@ def get_qdrant_client() -> AsyncQdrantClient:
 
 
 async def ensure_collection(client: AsyncQdrantClient | None = None) -> None:
-    """Create the postings collection if it does not already exist."""
+    """Create the postings collection and its payload indexes if missing.
+
+    Payload indexes are required for the market agent's filtered search (Qdrant
+    rejects a filter on an unindexed field). ``create_payload_index`` is idempotent,
+    so this is safe to call on an already-populated collection.
+    """
 
     settings = get_settings().qdrant
     client = client or get_qdrant_client()
-    if await client.collection_exists(settings.collection_name):
-        return
-    await client.create_collection(
-        collection_name=settings.collection_name,
-        vectors_config=VectorParams(
-            size=settings.vector_size,
-            distance=getattr(Distance, settings.distance.upper()),
-        ),
-    )
+    if not await client.collection_exists(settings.collection_name):
+        await client.create_collection(
+            collection_name=settings.collection_name,
+            vectors_config=VectorParams(
+                size=settings.vector_size,
+                distance=getattr(Distance, settings.distance.upper()),
+            ),
+        )
+    for field_name, field_schema in _PAYLOAD_INDEXES.items():
+        await client.create_payload_index(
+            collection_name=settings.collection_name,
+            field_name=field_name,
+            field_schema=field_schema,
+        )
 
 
 def _payload(posting: JobPosting) -> dict:
@@ -111,6 +137,46 @@ async def mark_inactive(job_ids: list[str], client: AsyncQdrantClient | None = N
         payload={"is_active": False},
         points=[point_id(job_id) for job_id in job_ids],
     )
+
+
+async def search(
+    query_vector: list[float],
+    *,
+    limit: int,
+    seniority: str | None = None,
+    role_cluster: str | None = None,
+    active_only: bool = True,
+    client: AsyncQdrantClient | None = None,
+) -> list[ScoredPoint]:
+    """Vector search the postings collection, returning scored points with payloads.
+
+    A thin store function: optional payload filters only, no fusion/re-ranking logic
+    (that lives in the market agent).
+    """
+
+    settings = get_settings().qdrant
+    client = client or get_qdrant_client()
+
+    conditions: list[FieldCondition] = []
+    if active_only:
+        conditions.append(FieldCondition(key="is_active", match=MatchValue(value=True)))
+    if seniority:
+        conditions.append(
+            FieldCondition(key="seniority", match=MatchValue(value=seniority))
+        )
+    if role_cluster:
+        conditions.append(
+            FieldCondition(key="role_cluster", match=MatchValue(value=role_cluster))
+        )
+
+    response = await client.query_points(
+        collection_name=settings.collection_name,
+        query=query_vector,
+        limit=limit,
+        query_filter=Filter(must=conditions) if conditions else None,
+        with_payload=True,
+    )
+    return response.points
 
 
 async def count_points(client: AsyncQdrantClient | None = None) -> int:
